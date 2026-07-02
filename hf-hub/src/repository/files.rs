@@ -285,7 +285,20 @@ pub(crate) fn extract_file_size(response: &reqwest::Response) -> Option<u64> {
         .and_then(|v| v.parse().ok())
 }
 
+/// Honor `HF_HUB_DISABLE_XET` (mirrors Python huggingface_hub): when set to a
+/// truthy value, pretend files have no xet hash so downloads use the plain
+/// HTTP/CDN path. Xet's chunked CAS protocol stalls behind some corporate
+/// proxies where a plain GET runs at full speed.
+pub(crate) fn xet_disabled() -> bool {
+    std::env::var("HF_HUB_DISABLE_XET")
+        .map(|v| !v.is_empty() && v != "0" && v.to_lowercase() != "false")
+        .unwrap_or(false)
+}
+
 pub(crate) fn extract_xet_hash(response: &reqwest::Response) -> Option<String> {
+    if xet_disabled() {
+        return None;
+    }
     response
         .headers()
         .get(constants::HEADER_X_XET_HASH)

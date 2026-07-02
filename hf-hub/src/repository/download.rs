@@ -207,7 +207,8 @@ impl<T: RepoType> HFRepository<T> {
             .await?;
 
         let file_size = extract_file_size(&head_response).unwrap_or(0);
-        let has_xet_hash = head_response.headers().get(constants::HEADER_X_XET_HASH).is_some();
+        let has_xet_hash = !super::files::xet_disabled()
+            && head_response.headers().get(constants::HEADER_X_XET_HASH).is_some();
 
         params.progress.emit(DownloadEvent::Start {
             total_files: 1,
