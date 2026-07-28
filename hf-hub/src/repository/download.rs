@@ -31,6 +31,7 @@ use crate::{constants, retry};
 pub(crate) type HFByteStream = Box<dyn Stream<Item = HFResult<bytes::Bytes>> + Send + Unpin>;
 
 /// Internal options struct used by the file download helpers.
+#[derive(Clone)]
 struct DownloadFileParams {
     filename: String,
     local_dir: Option<PathBuf>,
@@ -743,13 +744,12 @@ impl<T: RepoType> HFRepository<T> {
         }
 
         let repo_path = self.repo_path();
-        let commit_hash_ref = &commit_hash;
-        let head_futs = filenames.iter().map(|filename| {
+        let head_futs = filenames.into_iter().map(|filename| {
+                let commit_hash = commit_hash.clone();
                 let url = self
-                    .hf_client.download_url(self.repo_type.url_prefix(), &repo_path, commit_hash_ref, filename);
+                    .hf_client.download_url(self.repo_type.url_prefix(), &repo_path, &commit_hash, &filename);
                 let auth = self.hf_client.auth_headers();
-                let filename = filename.clone();
-                let repo_folder_ref = &repo_folder;
+                let repo_folder = repo_folder.clone();
                 async move {
                     let url = url?;
                     let resp = retry::retry(self.hf_client.retry_config(), || {
@@ -764,7 +764,7 @@ impl<T: RepoType> HFRepository<T> {
                     // treated as an error instead.
                     if resp.status() == reqwest::StatusCode::NOT_FOUND {
                         if let Some(commit) = extract_commit_hash(&resp) {
-                            let no_exist = cache::no_exist_path(cache_dir, repo_folder_ref, &commit, &filename);
+                            let no_exist = cache::no_exist_path(cache_dir, &repo_folder, &commit, &filename);
                             if let Some(parent) = no_exist.parent() {
                                 let _ = std::fs::create_dir_all(parent);
                             }
@@ -778,7 +778,7 @@ impl<T: RepoType> HFRepository<T> {
                     let etag = extract_etag(&resp).ok_or_else(|| {
                         HFError::malformed_response_at(format!("missing ETag header for {filename}"), url.clone())
                     })?;
-                    let commit = extract_commit_hash(&resp).unwrap_or_else(|| commit_hash_ref.clone());
+                    let commit = extract_commit_hash(&resp).unwrap_or(commit_hash);
                     let xet_hash = extract_xet_hash(&resp);
                     let file_size: u64 = extract_file_size(&resp).unwrap_or_else(|| {
                         tracing::warn!(file = %filename, "missing or invalid Content-Length/X-Linked-Size header, defaulting file size to 0");
@@ -1069,7 +1069,7 @@ async fn download_concurrently<T: RepoType>(
     params: &[DownloadFileParams],
     max_workers: usize,
 ) -> HFResult<Vec<PathBuf>> {
-    futures::stream::iter(params.iter().map(|p| api.download_file_inner(p)))
+    futures::stream::iter(params.iter().cloned().map(|p| api.download_file_impl(p)))
         .buffer_unordered(max_workers)
         .try_collect()
         .await
