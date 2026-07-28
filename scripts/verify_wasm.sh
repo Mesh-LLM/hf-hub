@@ -13,8 +13,8 @@ if ! rustup target list --installed | grep -q wasm32-unknown-unknown; then
   rustup target add wasm32-unknown-unknown
 fi
 
-echo "==> cargo check -p hf-hub --target wasm32-unknown-unknown --no-default-features"
-cargo check -p hf-hub --target wasm32-unknown-unknown --no-default-features
+echo "==> cargo check -p mesh-llm-hf-hub --target wasm32-unknown-unknown --no-default-features"
+cargo check -p mesh-llm-hf-hub --target wasm32-unknown-unknown --no-default-features
 
 echo
 echo "==> cargo check (wasm/smoke) — exercises HFRepository::download_file_stream through wasm-bindgen"

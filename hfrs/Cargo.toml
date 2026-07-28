@@ -6,7 +6,7 @@ description = "Command-line interface for the Hugging Face Hub"
 license = "Apache-2.0"
 
 [dependencies]
-hf-hub = { path = "../hf-hub" }
+hf_hub = { package = "mesh-llm-hf-hub", path = "../hf-hub" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 clap = { version = "4", features = ["derive", "env", "color"] }
 indicatif = "0.18"

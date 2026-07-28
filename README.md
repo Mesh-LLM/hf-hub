@@ -24,14 +24,14 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-hf-hub = "1.0.0"
+hf_hub = { package = "mesh-llm-hf-hub", version = "1.0.0" }
 ```
 
 To use the synchronous interface, enable the `blocking` feature:
 
 ```toml
 [dependencies]
-hf-hub = { version = "1.0.0", features = ["blocking"] }
+hf_hub = { package = "mesh-llm-hf-hub", version = "1.0.0", features = ["blocking"] }
 ```
 
 ## CLI Installation

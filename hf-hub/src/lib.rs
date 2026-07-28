@@ -159,7 +159,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! hf-hub = { version = "1", features = ["blocking"] }
+//! hf_hub = { package = "mesh-llm-hf-hub", version = "1", features = ["blocking"] }
 //! ```
 //!
 //! ```rust,no_run

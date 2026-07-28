@@ -47,7 +47,7 @@ These rules apply to ALL code written or modified in this repo:
 #### Unit Tests
 
 - Place in the same file using `#[cfg(test)]` modules
-- Run: `cargo test -p hf-hub`
+- Run: `cargo test -p mesh-llm-hf-hub`
 
 #### Integration Tests
 
@@ -61,7 +61,7 @@ These rules apply to ALL code written or modified in this repo:
 ### Formatting and Linting
 
 - Format: `cargo +nightly fmt`
-- Lint: `cargo clippy -p hf-hub --all-features -- -D warnings`
+- Lint: `cargo clippy -p mesh-llm-hf-hub --all-features -- -D warnings`
 - ALWAYS run both after making changes — do not skip this step
 
 ### Minimal Changes
@@ -173,7 +173,7 @@ hf-hub/
 ├── Cargo.toml                      # Workspace root
 ├── AGENTS.md                       # This file (CLAUDE.md is a symlink to it)
 ├── .gitignore
-├── hf-hub/                         # Main library crate (package: hf-hub)
+├── hf-hub/                         # Main library crate (package: mesh-llm-hf-hub)
 │   ├── Cargo.toml                  # Crate manifest, dependencies, features
 │   ├── src/
 │   │   ├── lib.rs                  # Module declarations, public re-exports, crate docs
