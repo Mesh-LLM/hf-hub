@@ -6,7 +6,7 @@ This document covers the full release process for the `hf-hub` crate. If anythin
 
 A single tag push releases one artifact:
 
-- **`hf-hub` Rust crate** on [crates.io](https://crates.io/crates/hf-hub), via `.github/workflows/rust-release.yml`.
+- **`mesh-llm-hf-hub` Rust crate** on [crates.io](https://crates.io/crates/mesh-llm-hf-hub), via `.github/workflows/rust-release.yml`.
 
 The workflow triggers on tags matching `v*` (e.g., `v1.0.0`, `v1.0.0-rc.0`).
 
@@ -42,8 +42,8 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 ### Unit tests (`hf-hub`)
 
 ```bash
-cargo test -p hf-hub
-cargo test -p hf-hub --features blocking
+cargo test -p mesh-llm-hf-hub
+cargo test -p mesh-llm-hf-hub --features blocking
 ```
 
 ### Integration tests (`integration-tests`)
@@ -184,8 +184,8 @@ cargo build
 
 Also confirm:
 
-- [crates.io/crates/hf-hub](https://crates.io/crates/hf-hub) shows the new version
-- [docs.rs/hf-hub](https://docs.rs/hf-hub) finishes the docs build (may take several minutes after publish)
+- [crates.io/crates/mesh-llm-hf-hub](https://crates.io/crates/mesh-llm-hf-hub) shows the new version
+- [docs.rs/mesh-llm-hf-hub](https://docs.rs/mesh-llm-hf-hub) finishes the docs build (may take several minutes after publish)
 
 ## Release candidates
 
@@ -208,7 +208,7 @@ The broken version stays on crates.io but can be marked yanked via `cargo yank -
 
 The release workflow uses one repository secret:
 
-- `CRATES_TOKEN` — crates.io API token with publish rights for the `hf-hub` crate.
+- `CARGO_REGISTRY_TOKEN` — crates.io API token with publish rights for the `mesh-llm-hf-hub` crate.
 
 If publish fails with an auth error, the token has likely expired or lost ownership. Rotate it on [crates.io](https://crates.io/me) and update the repo secret in **Settings → Secrets and variables → Actions**.
 
@@ -224,7 +224,7 @@ If you're modifying `.github/workflows/rust-release.yml`:
 ## Troubleshooting
 
 - **`cargo publish` says "crate version is already uploaded".** You cannot re-publish the same version. Bump to the next patch or pre-release and tag again.
-- **403 from crates.io.** The token in `CRATES_TOKEN` is missing publish rights for `hf-hub`. Ask the current owner to add the token's user via `cargo owner --add <user> hf-hub`.
+- **403 from crates.io.** The token in `CARGO_REGISTRY_TOKEN` is missing publish rights for `mesh-llm-hf-hub`.
 - **`failed to open for archiving: README.md` / "Too many levels of symbolic links".** The crate-level `README.md` symlink target is wrong. It must point at the workspace-root README via `../README.md` (not just `README.md`, which would resolve to itself). Fix with `ln -sfn ../README.md hf-hub/README.md`.
 - **`manifest has no documentation, homepage or repository`.** Non-blocking warning, but those fields should stay populated in `hf-hub/Cargo.toml` so crates.io and docs.rs render the proper links.
 - **Workflow didn't trigger.** Verify the tag was pushed (`git push origin <tag>`) and that the name matches `v*`. Annotated and lightweight tags both work.

@@ -12,7 +12,7 @@ use futures::StreamExt;
 use serde::Deserialize;
 #[cfg(test)]
 use xet::error::XetError;
-use xet::xet_session::{Sha256Policy, XetFileDownload, XetFileInfo, XetFileMetadata, XetFileUpload};
+use xet::xet_session::{Sha256Policy, XetFileDownload, XetFileInfo, XetFileUpload, XetStreamUpload};
 
 use crate::cache::storage as cache;
 use crate::client::HFClient;
@@ -203,6 +203,20 @@ pub(crate) struct XetBatchFile {
     pub filename: String,
 }
 
+enum NativeAnyHandle {
+    File(XetFileUpload),
+    Stream(XetStreamUpload),
+}
+
+impl NativeAnyHandle {
+    fn progress(&self) -> Option<xet::xet_session::ItemProgressReport> {
+        match self {
+            Self::File(handle) => handle.progress(),
+            Self::Stream(handle) => handle.progress(),
+        }
+    }
+}
+
 pub(crate) struct XetBlobFile<'a> {
     pub(crate) filename: &'a str,
     pub(crate) file_hash: &'a str,
@@ -260,13 +274,18 @@ async fn xet_upload_inner(
     .map_err(|e| HFError::xet(XetOperation::Upload, e))?;
     tracing::info!("xet upload commit built, queuing file uploads");
 
-    let mut task_ids_in_order = Vec::with_capacity(files.len());
-    let mut handles: Vec<XetFileUpload> = Vec::with_capacity(files.len());
+    enum TaskKey {
+        Id(xet::xet_session::UniqueId),
+        Stream,
+    }
+    let mut task_keys = Vec::with_capacity(files.len());
+    let mut handles = Vec::with_capacity(files.len());
     let mut item_name_to_target_path: HashMap<String, String> = HashMap::with_capacity(files.len());
+    let mut stream_tasks = Vec::new();
 
-    for (target_path, source) in files {
+    for (index, (target_path, source)) in files.iter().enumerate() {
         tracing::info!(path = target_path.as_str(), "queuing xet upload");
-        let handle = match source {
+        match source {
             AddSource::File(path) => {
                 // Mimic xet-core's `std::path::absolute()` logic to derive the
                 // item_name that will appear in ItemProgressReport.
@@ -278,25 +297,52 @@ async fn xet_upload_inner(
                         tracing::warn!(path = ?abs, "non-UTF-8 path; per-file progress unavailable");
                     }
                 }
-                commit
+                let handle = commit
                     .upload_from_path(path.clone(), Sha256Policy::Compute)
                     .await
-                    .map_err(|e| HFError::xet(XetOperation::Upload, e))?
+                    .map_err(|e| HFError::xet(XetOperation::Upload, e))?;
+                task_keys.push(TaskKey::Id(handle.task_id()));
+                handles.push(NativeAnyHandle::File(handle));
             },
             AddSource::Bytes(bytes) => {
                 item_name_to_target_path.insert(target_path.clone(), target_path.clone());
-                commit
-                    .upload_bytes(bytes.clone(), Sha256Policy::Compute, Some(target_path.clone()))
+                let handle = commit
+                    .upload_bytes(bytes.to_vec(), Sha256Policy::Compute, Some(target_path.clone()))
                     .await
-                    .map_err(|e| HFError::xet(XetOperation::Upload, e))?
+                    .map_err(|e| HFError::xet(XetOperation::Upload, e))?;
+                task_keys.push(TaskKey::Id(handle.task_id()));
+                handles.push(NativeAnyHandle::File(handle));
             },
-        };
-        task_ids_in_order.push(handle.task_id());
-        handles.push(handle);
+            AddSource::Stream(source) => {
+                item_name_to_target_path.insert(target_path.clone(), target_path.clone());
+                let handle = commit
+                    .upload_stream(Some(target_path.clone()), Sha256Policy::Compute)
+                    .await
+                    .map_err(|e| HFError::xet(XetOperation::Upload, e))?;
+                let task_handle = handle.clone();
+                let source = source.clone();
+                stream_tasks.push((
+                    index,
+                    tokio::spawn(async move {
+                        let mut stream = source.open();
+                        while let Some(chunk) = stream.next().await {
+                            task_handle
+                                .write(chunk?)
+                                .await
+                                .map_err(|e| HFError::xet(XetOperation::Upload, e))?;
+                        }
+                        let metadata = task_handle.finish().await.map_err(|e| HFError::xet(XetOperation::Upload, e))?;
+                        Ok::<_, HFError>(metadata.xet_info)
+                    }),
+                ));
+                task_keys.push(TaskKey::Stream);
+                handles.push(NativeAnyHandle::Stream(handle));
+            },
+        }
     }
 
     tracing::info!(file_count = files.len(), "committing xet uploads");
-    let shared_handles: Arc<Vec<XetFileUpload>> = Arc::new(handles);
+    let shared_handles: Arc<Vec<NativeAnyHandle>> = Arc::new(handles);
     let shared_name_map: Arc<HashMap<String, String>> = Arc::new(item_name_to_target_path);
 
     let poll_handle = progress.as_ref().map(|handler| {
@@ -340,6 +386,13 @@ async fn xet_upload_inner(
             }
         })
     });
+    let mut stream_infos = HashMap::new();
+    for (index, task) in stream_tasks {
+        let info = task
+            .await
+            .map_err(|e| HFError::Other(format!("xet stream upload task panicked: {e}")))??;
+        stream_infos.insert(index, info);
+    }
     let results = commit.commit().await.map_err(|e| HFError::xet(XetOperation::Upload, e))?;
     if let Some(h) = poll_handle {
         h.abort();
@@ -351,6 +404,7 @@ async fn xet_upload_inner(
         .map(|(target_path, source)| {
             let size = match source {
                 AddSource::Bytes(b) => b.len() as u64,
+                AddSource::Stream(s) => s.size(),
                 AddSource::File(p) => std::fs::metadata(p).map(|m| m.len()).unwrap_or(0),
             };
             FileProgress {
@@ -373,12 +427,19 @@ async fn xet_upload_inner(
     });
 
     let mut xet_file_infos = Vec::with_capacity(files.len());
-    for task_id in &task_ids_in_order {
-        let metadata: &XetFileMetadata = results
-            .uploads
-            .get(task_id)
-            .ok_or_else(|| HFError::Other("Missing xet upload result for task".to_string()))?;
-        xet_file_infos.push(metadata.xet_info.clone());
+    for (index, key) in task_keys.into_iter().enumerate() {
+        let info = match key {
+            TaskKey::Id(task_id) => results
+                .uploads
+                .get(&task_id)
+                .ok_or_else(|| HFError::Other("Missing xet upload result for task".to_string()))?
+                .xet_info
+                .clone(),
+            TaskKey::Stream => stream_infos
+                .remove(&index)
+                .ok_or_else(|| HFError::Other(format!("missing xet stream upload result for index {index}")))?,
+        };
+        xet_file_infos.push(info);
     }
 
     Ok(xet_file_infos)
@@ -778,6 +839,55 @@ impl<T: RepoType> HFRepository<T> {
 }
 
 impl crate::buckets::HFBucket {
+    pub(crate) async fn xet_download_stream(
+        &self,
+        file_hash: &str,
+        file_size: u64,
+    ) -> HFResult<impl futures::Stream<Item = HFResult<bytes::Bytes>> + use<>> {
+        let bucket_id = self.bucket_id();
+        let token_url = bucket_xet_token_url(&self.hf_client, "read", &bucket_id);
+        let conn = fetch_xet_connection_info(
+            &self.hf_client,
+            &token_url,
+            Some(&bucket_id),
+            crate::error::NotFoundContext::Bucket,
+        )
+        .await?;
+
+        let (session, generation) = self.hf_client.xet_session()?;
+        let group = match session.new_download_stream_group() {
+            Ok(builder) => builder,
+            Err(error) => {
+                self.hf_client.replace_xet_session(generation, &error);
+                self.hf_client
+                    .xet_session()?
+                    .0
+                    .new_download_stream_group()
+                    .map_err(|e| HFError::xet(XetOperation::StreamDownload, e))?
+            },
+        }
+        .with_endpoint(conn.endpoint)
+        .with_token_info(conn.access_token, conn.expiration_unix_epoch)
+        .with_token_refresh_url(token_url, self.hf_client.auth_headers())
+        .build()
+        .await
+        .map_err(|e| HFError::xet(XetOperation::StreamDownload, e))?;
+
+        let mut stream = group
+            .download_stream(XetFileInfo::new(file_hash.to_string(), file_size), None)
+            .await
+            .map_err(|e| HFError::xet(XetOperation::StreamDownload, e))?;
+        stream.start();
+
+        Ok(futures::stream::unfold(stream, |mut stream| async move {
+            match stream.next().await {
+                Ok(Some(bytes)) => Some((Ok(bytes), stream)),
+                Ok(None) => None,
+                Err(error) => Some((Err(HFError::xet(XetOperation::StreamDownload, error)), stream)),
+            }
+        }))
+    }
+
     pub(crate) async fn xet_upload(
         &self,
         files: &[(String, AddSource)],

@@ -28,6 +28,8 @@ use crate::error::{HFError, HFResult};
 use crate::progress::{DownloadEvent, EmitEvent, FileProgress, FileStatus, Progress};
 use crate::{constants, retry};
 
+pub(crate) type HFByteStream = Box<dyn Stream<Item = HFResult<bytes::Bytes>> + Send + Unpin>;
+
 /// Internal options struct used by the file download helpers.
 struct DownloadFileParams {
     filename: String,
@@ -95,7 +97,7 @@ impl<T: RepoType> HFRepository<T> {
         let repo_path = self.repo_path();
         let url = self
             .hf_client
-            .download_url(self.repo_type.url_prefix(), &repo_path, revision, &params.filename);
+            .download_url(self.repo_type.url_prefix(), &repo_path, revision, &params.filename)?;
 
         let headers = self.hf_client.auth_headers();
         let head_response = retry::retry(self.hf_client.retry_config(), || {
@@ -187,7 +189,7 @@ impl<T: RepoType> HFRepository<T> {
         let repo_path = self.repo_path();
         let url = self
             .hf_client
-            .download_url(self.repo_type.url_prefix(), &repo_path, revision, &params.filename);
+            .download_url(self.repo_type.url_prefix(), &repo_path, revision, &params.filename)?;
 
         let headers = self.hf_client.auth_headers();
         let head_response = retry::retry(self.hf_client.retry_config(), || {
@@ -359,7 +361,7 @@ impl<T: RepoType> HFRepository<T> {
         let repo_path = self.repo_path();
         let url = self
             .hf_client
-            .download_url(self.repo_type.url_prefix(), &repo_path, revision, &params.filename);
+            .download_url(self.repo_type.url_prefix(), &repo_path, revision, &params.filename)?;
 
         let cached_etag = if !force_download {
             self.find_cached_etag(repo_folder, revision, &params.filename)
@@ -749,6 +751,7 @@ impl<T: RepoType> HFRepository<T> {
                 let filename = filename.clone();
                 let repo_folder_ref = &repo_folder;
                 async move {
+                    let url = url?;
                     let resp = retry::retry(self.hf_client.retry_config(), || {
                         self.hf_client.no_redirect_client().head(&url).headers(auth.clone()).send()
                     })
@@ -1155,12 +1158,36 @@ fn content_range_matches(headers: &reqwest::header::HeaderMap, expected_start: u
     start == expected_start && end.saturating_add(1) <= expected_total && total_matches
 }
 
-fn wrap_stream_with_progress(
-    stream: Box<dyn Stream<Item = HFResult<bytes::Bytes>> + Send + Unpin>,
+#[cfg(target_family = "wasm")]
+pub(crate) fn buffer_wasm_stream(inner: HFByteStream) -> HFByteStream {
+    use futures::SinkExt;
+    use futures::channel::mpsc;
+
+    const BUFFER_DEPTH: usize = 2;
+    let (mut tx, rx) = mpsc::channel::<HFResult<bytes::Bytes>>(BUFFER_DEPTH);
+
+    wasm_bindgen_futures::spawn_local(async move {
+        let mut inner = inner;
+        while let Some(item) = inner.next().await {
+            let is_err = item.is_err();
+            if tx.send(item).await.is_err() {
+                return;
+            }
+            if is_err {
+                return;
+            }
+        }
+    });
+
+    Box::new(Box::pin(rx))
+}
+
+pub(crate) fn wrap_stream_with_progress(
+    stream: HFByteStream,
     progress: Option<Progress>,
     filename: String,
     total_bytes: u64,
-) -> Box<dyn Stream<Item = HFResult<bytes::Bytes>> + Send + Unpin> {
+) -> HFByteStream {
     if progress.is_none() {
         return stream;
     }
